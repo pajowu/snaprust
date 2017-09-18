@@ -1,0 +1,12 @@
+[package]
+name = "snaprust"
+version = "0.1.0"
+authors = ["pajowu <git@ca.pajowu.de>"]
+
+[dependencies]
+alsa = "*"
+clap = "*"
+byteorder = "1.1.0"
+serde_json = "1.0"
+serde = "1.0"
+serde_derive = "1.0"
