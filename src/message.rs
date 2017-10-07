@@ -114,15 +114,15 @@ impl MessageType {
 
 #[derive(Debug, Clone)]
 pub struct TimeVal {
-    pub sec: i32,
-    pub usec: i32
+    pub sec: isize,
+    pub usec: isize
 }
 
 impl TimeVal {
     fn serialize(&self) -> Vec<u8> {
         let mut tv_vec = Vec::new();
-        tv_vec.extend(serialize_i32(self.sec));
-        tv_vec.extend(serialize_i32(self.usec));
+        tv_vec.extend(serialize_i32(self.sec as i32));
+        tv_vec.extend(serialize_i32(self.usec as i32));
         return tv_vec
     }
 
@@ -131,8 +131,8 @@ impl TimeVal {
         let since_the_epoch = start.duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
         let tv = TimeVal {
-            sec: since_the_epoch.as_secs() as i32,
-            usec: (since_the_epoch.subsec_nanos()/1000) as i32
+            sec: since_the_epoch.as_secs() as isize,
+            usec: (since_the_epoch.subsec_nanos()/1000) as isize
         };
         tv
     }
@@ -211,8 +211,8 @@ impl Message {
             type_: type_,
             id: id,
             refers_to: refers_to,
-            recieved: TimeVal { sec: recv_sec, usec: recv_usec },
-            sent: TimeVal { sec: sent_sec, usec: sent_usec },
+            recieved: TimeVal { sec: recv_sec as isize, usec: recv_usec as isize },
+            sent: TimeVal { sec: sent_sec as isize, usec: sent_usec as isize },
         })
     }
 }
@@ -287,8 +287,8 @@ impl SnapMessageData for TimeData {
         let usec = LittleEndian::read_i32(&data[4..]);
         TimeData {
             latency: TimeVal {
-                sec: sec,
-                usec: usec
+                sec: sec as isize,
+                usec: usec as isize
             }
         }
 
@@ -348,8 +348,8 @@ impl SnapMessageData for WireChunkData {
         WireChunkData {
             payload: payload.to_vec(),
             timestamp: TimeVal {
-                sec: sec,
-                usec: usec
+                sec: sec as isize,
+                usec: usec as isize
             }
         }
     }

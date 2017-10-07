@@ -1,14 +1,11 @@
 extern crate clap;
-extern crate alsa;
 extern crate byteorder;
 extern crate serde;
 extern crate serde_json;
 extern crate hound;
-extern crate rodio;
+extern crate alsa;
 
-
-use rodio::Sink;
-use rodio::buffer::SamplesBuffer;
+use alsa::pcm::{PCM, HwParams, Format, Access, State};
 
 #[macro_use] extern crate serde_derive;
 #[macro_use] extern crate log;
@@ -19,7 +16,6 @@ use simplelog::{Config, TermLogger, WriteLogger, CombinedLogger, LogLevelFilter}
 use std::ffi::CString;
 use clap::{Arg, App, SubCommand};
 use alsa::{Direction, ValueOr};
-use alsa::pcm::{PCM, HwParams, Format, Access, State};
 use std::net::TcpStream;
 use std::io::{Write, Read};
 
@@ -30,11 +26,14 @@ use std::sync::Mutex;
 use std::time;
 
 mod message;
-use message::SnapMessageData;
+use message::{SnapMessageData, TimeVal};
 
 mod network_handler;
 mod decoder;
 use decoder::Decoder;
+
+mod time_provider;
+use time_provider::TimeProvider;
 
 fn main() {
     let _ = CombinedLogger::init(
@@ -178,43 +177,90 @@ fn main() {
         msg_tx.send(time_msg);
     }
 
-    let endpoint = rodio::get_default_endpoint();
-    if endpoint.is_none() {
-        return
-    }
-    let endpoint = endpoint.unwrap();
-    let sink = Sink::new(&endpoint);
+    let pcm = PCM::open(&*CString::new("default").unwrap(), Direction::Playback, false).unwrap();
+    let hwp = HwParams::any(&pcm).unwrap();
+
     let mut decoder: Option<Box<Decoder>> = None;
+
+    let mut time_provider = TimeProvider::new();
+
+    let mut buffer_queue: Vec<(usize, Vec<i16>)> = Vec::new();
+
 
     loop {
         while let Ok(msg) = msg_rx.try_recv() {
             debug!("Got message: {:?}", msg);
             match msg.type_ {
                 message::MessageType::Base(_) => {},
-                message::MessageType::CodecHeader(d) => decoder = handleCodecHeader(d),
-                message::MessageType::WireChunk(d) => decoder = handleWireChunk(decoder, d, &sink),
+                message::MessageType::CodecHeader(d) => {
+                    decoder = handleCodecHeader(d, &hwp);
+                    pcm.hw_params(&hwp).unwrap();
+                },
+                message::MessageType::WireChunk(d) => {
+                    let chunk = handleWireChunk(&decoder, d);
+                    match chunk {
+                        Some(c) => buffer_queue.push(c),
+                        _ => {}
+                    }
+                },
                 message::MessageType::ServerSettings(d) => handleServerSetting(d),
-                message::MessageType::Time(d) => handleTime(d),
+                message::MessageType::Time(d) => handleTime(d, &mut time_provider),
                 message::MessageType::Hello(_) => {},
             };
         }
-        thread::sleep(time::Duration::from_millis(100));
+
+        buffer_queue.sort_by(|a, b| a.0.cmp(&b.0));
+        let server_time = time_provider.get_server_time();
+
+        //buffer_queue = buffer_queue.into_iter().filter(|x| (x.0 as usize) > server_time).collect();
+        //(server now - rec time: some positive value) - buffer (e.g. 1000ms) + time to DAC
+        let io = pcm.io_i16().unwrap();
+        let mut t_v = Vec::new();
+        let mut buf_q: Vec<(usize, Vec<i16>)> = Vec::new();
+        for e in buffer_queue {
+            let age = (server_time as isize - e.0 as isize) - 1000 + 150;
+            if 0 <= age && age <= 100 {
+                t_v.extend(e.1);
+            } else if age > 0 {
+                println!("{}", age);
+                buf_q.push(e)
+            } else {
+                println!("{}", e.0);
+            }
+        }
+        info!("buf: {:?}", t_v.len());
+        while let Err(e) = io.writei(t_v.as_slice()) {
+            info!("write to pipe got error {:?}, retry", e.code());
+            pcm.recover(e.code(), true);
+        }
+        //if pcm.state() != State::Running { pcm.start().unwrap() };
+        buffer_queue = buf_q;
+
+        thread::sleep(time::Duration::from_millis(1000));
     }
 
     t.join();
 
 }
 
-fn handleCodecHeader(data: message::CodecHeaderData) -> Option<Box<Decoder>> {
+fn handleCodecHeader(data: message::CodecHeaderData, hwp: &HwParams) -> Option<Box<Decoder>> {
     let decoder: Box<Decoder> = match data.codec.as_str() {
         "pcm" => Box::new(decoder::PCMDecoder),
         _ => Box::new(decoder::DummyDecoder)
     };
     decoder.setHeader(data);
+    decoder.get_hwparams(hwp);
     Some(decoder)
 }
-fn handleWireChunk(decoder: Option<Box<Decoder>>, data: message::WireChunkData, sink: &Sink) -> Option<Box<Decoder>> {
-    if decoder.is_some() {
+fn handleWireChunk(decoder: &Option<Box<Decoder>>, data: message::WireChunkData) -> Option<(usize,Vec<i16>)> {
+    match decoder {
+        &Some(ref d) => {
+            let time = (data.timestamp.sec as usize)*1000 + (data.timestamp.usec / 1000) as usize;
+            Some((time, d.decode(data.payload)))
+        },
+        &None => None
+    }
+    /*if decoder.is_some() {
         let decoder = decoder.unwrap();
         let new_chunk = decoder.decode(data);
         /*let buffer = SamplesBuffer::new(1, 44100, new_chunk);*/
@@ -222,11 +268,13 @@ fn handleWireChunk(decoder: Option<Box<Decoder>>, data: message::WireChunkData, 
         Some(decoder)
     } else {
         decoder
-    }
+    }*/
 }
 fn handleServerSetting(data: message::ServerSettingsData) {
 
 }
-fn handleTime(data: message::TimeData) {
+fn handleTime(data: message::TimeData, time_provider: &mut TimeProvider) {
+
+    time_provider.add_time(data.latency);
 
 }

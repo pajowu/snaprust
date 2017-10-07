@@ -3,10 +3,11 @@ use decoder::Decoder;
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use std::ops::Range;
 use hound;
-use rodio::buffer::SamplesBuffer;
 use std::io::Cursor;
 use std::mem;
-use rodio::Source;
+
+use alsa::pcm::{PCM, HwParams, Format, Access, State};
+use alsa::{Direction, ValueOr};
 
 #[repr(C, packed)]
 #[derive(Debug, Clone)]
@@ -27,16 +28,15 @@ struct RiffHeader {
 pub struct PCMDecoder;
 
 impl Decoder for PCMDecoder {
-    fn decode(&self, chunk: message::WireChunkData) -> SamplesBuffer<i16> {
+    fn decode(&self, chunk: Vec<u8>) -> Vec<i16> {
 
         //let mut rdr = Cursor::new(chunk.payload);
-        let mut frames = vec![0i16; chunk.payload.len()/2];
+        let mut frames = vec![0i16; chunk.len()/2];
         unsafe {
-            LittleEndian::read_i16_into(chunk.payload.as_slice(), frames.as_mut_slice());
+            LittleEndian::read_i16_into(chunk.as_slice(), frames.as_mut_slice());
         }
         //let frames = Vec::new();
-        let buffer= SamplesBuffer::new(2, 44100, frames);
-        buffer
+        frames
     }
     fn setHeader(&self, mut header: message::CodecHeaderData) {
         assert!(header.payload.len() >= 44);
@@ -52,5 +52,11 @@ impl Decoder for PCMDecoder {
     }
     fn new() -> Self {
         Self {}
+    }
+    fn get_hwparams(&self, hwp: &HwParams) {
+        hwp.set_channels(2).unwrap();
+        hwp.set_rate(48000, ValueOr::Nearest).unwrap();
+        hwp.set_format(Format::s16()).unwrap();
+        hwp.set_access(Access::RWInterleaved).unwrap();
     }
 }
